@@ -1,0 +1,154 @@
+
+#-------------------------------------------------
+# Lab 5 
+# Isabel McCormick
+# May 13th, 2026
+#-------------------------------------------------
+
+
+### WALKER 7.8 Exericses
+
+# Libraries
+library(tidycensus)
+library(tigris)
+library(tidyverse)
+library(sf)
+library(crsuggest)
+library(spdep)
+
+options(tigris_use_cache = TRUE)
+
+
+# Obtaining Data: CRS
+portland_cbsa <- core_based_statistical_areas(cb = TRUE, year = 2020) %>%
+  filter(str_detect(NAME, "Portland")) %>%
+  st_transform(2992)
+
+# Obtaining Data: Oregon+ Washington Tracks
+or_wa_tracts <- map_dfr(c("OR", "WA"), ~{
+  tracts(.x, cb = TRUE, year = 2020)
+}) %>%
+  st_transform(2992)
+
+### keeping tracts inside the Portland CBSA
+portland_tracts <- or_wa_tracts %>%
+  st_filter(portland_cbsa, .predicate = st_within)
+
+### count census tracts
+nrow(portland_tracts)
+
+# Obtaining Data: Tract data
+king_income <- get_acs(
+  geography = "tract",
+  variables = "B19013_001",
+  state = "WA",
+  county = "King",
+  geometry = TRUE,
+  year = 2020,
+  cb = FALSE
+)
+
+# Obtaining Data: Income Data
+portland_income <- get_acs(
+  geography = "tract",
+  variables = "B19013_001",
+  state = "OR",
+  county = "Multnomah",
+  year = 2020,
+  geometry = TRUE
+) %>%
+  st_transform(2992) %>%
+  na.omit()
+
+
+# 1 
+
+# Census Tracks within Portland 
+ggplot() +
+  geom_sf(data = portland_tracts,
+          fill = "lightblue",
+          color = "white") +
+  geom_sf(data = portland_cbsa,
+          fill = NA,
+          color = "red",
+          linewidth = 1) +
+  theme_void() +
+  labs(
+    title = "Census Tracts Within the Portland CBSA"
+  )
+
+
+# 2
+
+### find a projected CRS
+suggest_crs(king_income)
+
+### transform to projected CRS
+king_income_proj <- king_income %>%
+  st_transform(2285)
+
+### erase water areas
+king_erase <- erase_water(
+  king_income_proj,
+  area_threshold = 0.95
+)
+
+# Map Median Household income
+ggplot(king_erase) +
+  geom_sf(aes(fill = estimate), color = NA) +
+  scale_fill_viridis_c(labels = scales::label_dollar()) +
+  theme_void() +
+  labs(
+    title = "Median Household Income in King County, WA",
+    fill = "Median\nIncome"
+  )
+
+
+# 3
+
+# Plot income
+ggplot(portland_income) +
+  geom_sf(aes(fill = estimate), color = NA) +
+  scale_fill_viridis_c() +
+  theme_void() +
+  labs(
+    title = "Median Household Income",
+    fill = "Income"
+  )
+
+# Obtain Data: Neighbor data
+neighbors <- poly2nb(
+  portland_income,
+  queen = TRUE
+)
+
+### convert to spatial weights matrix
+weights <- nb2listw(
+  neighbors,
+  style = "W"
+)
+
+### identify clusters of high or low value
+local_g <- localG(
+  portland_income$estimate,
+  weights
+)
+portland_income$hotspot <- as.numeric(local_g)
+
+### categorize hot and cold spots
+portland_income <- portland_income %>%
+  mutate(cluster = case_when(
+    hotspot >= 1.96 ~ "High income hot spot",
+    hotspot <= -1.96 ~ "Low income cold spot",
+    TRUE ~ "Not significant"
+  ))
+
+# Map hotspots
+ggplot(portland_income) +
+  geom_sf(aes(fill = cluster), color = NA) +
+  theme_void() +
+  labs(
+    title = "High and Low Income Clusters in Multnomah County",
+    fill = "Cluster Type"
+  )
+
